@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose -f c:/Users/idkco/Documents/TuringLytics/TuringTest/docker-compose.yml exec backend python -c \":*)",
+      "Bash(docker-compose -f c:/Users/idkco/Documents/TuringLytics/TuringTest/docker-compose.yml exec backend python seed.py)"
+    ]
+  }
+}

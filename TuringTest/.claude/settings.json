@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose exec backend python seed.py)",
+      "Bash(docker-compose exec backend python -c \":*)",
+      "Bash(sqlite3 /c/Users/idkco/Documents/TuringLytics/TuringTest/backend/data.db \".tables\")",
+      "Bash(python -c \":*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(curl -s -X POST http://localhost:5000/api/fan-games/debug/reset-today)",
+      "Bash(curl -s http://localhost:5000/api/fan-games/debug/status)",
+      "Bash(docker-compose logs:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(sqlite3 backend/data.db \".schema players\")",
+      "Bash(docker exec turingtest-backend-1 python3 -c \":*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(curl -s http://localhost:5000/api/fan-games/higher-lower/pair)",
+      "Bash(curl -s http://localhost:5000/api/fan-games/grid/today)",
+      "Bash(curl -s http://localhost:5000/api/fan-games/guess/today)",
+      "Bash(curl -s \"http://localhost:5000/api/fan-games/target/players?q=Smith\")",
+      "Bash(curl -s http://localhost:5000/api/fan-games/target/today)",
+      "Bash(curl -s -X POST http://localhost:5000/api/fan-games/higher-lower/answer -H \"Content-Type: application/json\" -d '{\"\"\"\"player_a_id\"\"\"\":229,\"\"\"\"player_b_id\"\"\"\":182,\"\"\"\"stat_key\"\"\"\":\"\"\"\"HR\"\"\"\",\"\"\"\"answer\"\"\"\":\"\"\"\"higher\"\"\"\"}')",
+      "Bash(python -m json.tool)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\idkco\\.claude\\projects\\c--Users-idkco-Documents-TuringLytics-TuringTest\\memory"
+    ]
+  }
+}
