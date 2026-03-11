@@ -635,7 +635,7 @@ def generate_target_challenge(challenge_date: date) -> dict:
         "label": label,
         "season": season,  # None when data.db unavailable — frontend handles gracefully
         "max_players": MAX_TARGET_PLAYERS,
-        "time_limit_seconds": 90,
+        "time_limit_seconds": 300,
     }
 
 
@@ -851,28 +851,53 @@ def get_higher_lower_pair(allowed_seasons=None) -> dict:
     if len(pool) < 2:
         return None
 
-    # Sample two entries; retry to avoid same player twice
+    # Sample two entries; retry until we find a valid pair with a usable stat
+    # A valid pair: different players, chosen stat has BOTH values > 0 and they differ (no ties)
     entry1, entry2 = pool[0], pool[1]
-    for _ in range(50):
-        entry1, entry2 = random.sample(pool, 2)
-        if entry1[0]["id"] != entry2[0]["id"]:
+    stat_key = None
+    val1 = val2 = 0
+
+    for _ in range(100):
+        e1, e2 = random.sample(pool, 2)
+        if e1[0]["id"] == e2[0]["id"]:
+            continue
+
+        pi1, st1, se1, sy1 = e1
+        pi2, st2, se2, sy2 = e2
+
+        pos1 = pi1.get("position") or ""
+        pos2 = pi2.get("position") or ""
+        if pos1 == "P" and pos2 == "P":
+            candidates = list(HIGHER_LOWER_STATS["pitchers"])
+        elif pos1 != "P" and pos2 != "P":
+            candidates = list(HIGHER_LOWER_STATS["batters"])
+        else:
+            candidates = ["H", "R"]
+
+        random.shuffle(candidates)
+        found_stat = None
+        fv1 = fv2 = 0
+        for candidate in candidates:
+            c1 = st1.get(candidate, 0) or 0
+            c2 = st2.get(candidate, 0) or 0
+            # Both must be non-zero AND different (no ties)
+            if c1 > 0 and c2 > 0 and c1 != c2:
+                found_stat, fv1, fv2 = candidate, c1, c2
+                break
+
+        if found_stat:
+            entry1, entry2 = e1, e2
+            stat_key = found_stat
+            val1, val2 = fv1, fv2
             break
+
+    if stat_key is None:
+        return None
 
     pinfo1, s1, season1, year1 = entry1
     pinfo2, s2, season2, year2 = entry2
 
-    pos1 = pinfo1.get("position") or ""
-    pos2 = pinfo2.get("position") or ""
-    if pos1 == "P" and pos2 == "P":
-        stat_key = random.choice(HIGHER_LOWER_STATS["pitchers"])
-    elif pos1 != "P" and pos2 != "P":
-        stat_key = random.choice(HIGHER_LOWER_STATS["batters"])
-    else:
-        stat_key = random.choice(["H", "R"])
-
-    val1 = s1.get(stat_key, 0)
-    val2 = s2.get(stat_key, 0)
-    correct = "higher" if val2 >= val1 else "lower"
+    correct = "higher" if val2 > val1 else "lower"
 
     return {
         "stat_key": stat_key,

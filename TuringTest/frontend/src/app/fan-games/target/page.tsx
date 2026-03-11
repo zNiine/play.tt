@@ -34,6 +34,7 @@ interface LeaderboardEntry {
   display_name: string;
   score: number;
   totals: Record<string, number>;
+  selected_players: Array<{ full_name: string; position: string; stats: Record<string, number>; season?: string }>;
 }
 
 const STAT_LABELS: Record<string, string> = {
@@ -50,7 +51,7 @@ const STAT_LABELS: Record<string, string> = {
   OBP: "OBP",
 };
 
-const TIME_LIMIT = 90;
+const TIME_LIMIT = 300;
 
 export default function TargetLinePage() {
   const { user } = useAuthStore();
@@ -68,6 +69,7 @@ export default function TargetLinePage() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"play" | "leaderboard">("play");
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedRef = useRef<SelectedPlayer[]>([]);
@@ -240,7 +242,7 @@ export default function TargetLinePage() {
           <h1 className="page-title">Target Line</h1>
           <span className="stat-pill bg-brand-500/20 text-brand-300 border border-brand-400/30 text-xs">Daily</span>
         </div>
-        <p className="page-subtitle">Build a roster whose combined stats match the target. 90 seconds on the clock.</p>
+        <p className="page-subtitle">Build a roster whose combined stats match the target. 5 minutes on the clock.</p>
       </div>
 
       {/* Tabs */}
@@ -268,12 +270,12 @@ export default function TargetLinePage() {
                 {gameState === "playing" && (
                   <div className={cn(
                     "flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-mono font-bold text-lg border",
-                    timeLeft <= 10
+                    timeLeft <= 30
                       ? "text-red-400 border-red-500/30 bg-red-500/10"
                       : "text-brand-300 border-brand-400/30 bg-brand-500/10"
                   )}>
                     <Clock size={14} />
-                    {timeLeft}s
+                    {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
                   </div>
                 )}
               </div>
@@ -323,11 +325,11 @@ export default function TargetLinePage() {
               )}
               <div className="text-center py-6">
                 <p className="text-slate-400 text-sm mb-4">
-                  You have {TIME_LIMIT} seconds to build a roster of ALPB players.
+                  You have 5 minutes to build a roster of ALPB players.
                   Pick a season for each player; combined stats should match the target line.
                 </p>
                 <button onClick={startGame} className="btn-primary px-8">
-                  Start — {TIME_LIMIT}s Clock
+                  Start — 5:00 Clock
                 </button>
               </div>
             </>
@@ -480,25 +482,65 @@ export default function TargetLinePage() {
         <div className="glass-card overflow-hidden">
           <div className="p-4 border-b border-white/5">
             <h3 className="text-sm font-semibold text-white">Today's Leaderboard</h3>
+            <p className="text-xs text-slate-500 mt-0.5">Click a row to see their roster</p>
           </div>
           {leaderboard.length === 0 ? (
             <div className="p-8 text-center text-slate-500 text-sm">No submissions yet today.</div>
           ) : (
             <div className="divide-y divide-white/5">
               {leaderboard.map((entry) => (
-                <div key={entry.rank} className="flex items-center gap-4 px-4 py-3">
-                  <div className={cn("rank-badge", entry.rank <= 3 ? `rank-${entry.rank}` : "bg-white/5 text-slate-400")}>
-                    {entry.rank}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-white truncate">{entry.display_name}</div>
-                    {entry.totals && (
-                      <div className="text-xs text-slate-500">
-                        {Object.entries(entry.totals).map(([s, v]) => `${v} ${s}`).join(" · ")}
+                <div key={entry.rank}>
+                  <button
+                    className="w-full flex items-center gap-4 px-4 py-3 hover:bg-white/5 transition-colors text-left"
+                    onClick={() => setExpandedEntry(expandedEntry === entry.rank ? null : entry.rank)}
+                  >
+                    <div className={cn("rank-badge shrink-0", entry.rank <= 3 ? `rank-${entry.rank}` : "bg-white/5 text-slate-400")}>
+                      {entry.rank}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-white truncate">{entry.display_name}</div>
+                      {entry.totals && (
+                        <div className="text-xs text-slate-500">
+                          {Object.entries(entry.totals).map(([s, v]) => `${v} ${s}`).join(" · ")}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-neon-green font-mono font-bold text-sm shrink-0">{entry.score.toFixed(1)}%</div>
+                  </button>
+                  {expandedEntry === entry.rank && entry.selected_players?.length > 0 && (
+                    <div className="px-4 pb-3 bg-white/[0.02] border-t border-white/5">
+                      <div className="space-y-1.5 pt-2">
+                        {entry.selected_players.map((p, i) => (
+                          <div key={i} className="flex items-center gap-3 py-1">
+                            <div className={cn("position-badge text-xs shrink-0",
+                              p.position === "P" ? "bg-red-500/20 text-red-300" : "bg-brand-500/20 text-brand-300")}>
+                              {p.position || "—"}
+                            </div>
+                            <div className="flex-1 text-sm text-slate-300 min-w-0 truncate">
+                              {p.full_name}
+                              {p.season && <span className="text-slate-500 ml-1">({String(p.season).match(/\d{4}/)?.[0] ?? p.season})</span>}
+                            </div>
+                            <div className="flex gap-2 text-xs text-slate-400 shrink-0">
+                              {Object.keys(target || {}).map((stat) => (
+                                <span key={stat}>{stat}:{p.stats?.[stat] ?? 0}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        {entry.totals && (
+                          <div className="flex items-center gap-3 py-1 pt-2 border-t border-white/5">
+                            <div className="text-xs text-slate-500 font-semibold w-8 shrink-0">TOT</div>
+                            <div className="flex-1" />
+                            <div className="flex gap-2 text-xs font-semibold text-white shrink-0">
+                              {Object.entries(entry.totals).map(([stat, val]) => (
+                                <span key={stat}>{val} {stat}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <div className="text-neon-green font-mono font-bold text-sm">{entry.score.toFixed(1)}%</div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

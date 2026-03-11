@@ -15,10 +15,12 @@ interface RosterChallenge {
   player_count: number;
 }
 
-interface GuessResult {
-  matched: boolean;
-  player_name?: string;
-  already_found?: boolean;
+interface PlayerOption {
+  id: number | string;
+  full_name: string;
+  position: string;
+  team: string;
+  team_name: string;
 }
 
 interface LeaderboardEntry {
@@ -35,7 +37,9 @@ export default function RosterPage() {
   const { user } = useAuthStore();
   const [challenge, setChallenge] = useState<RosterChallenge | null>(null);
   const [gameState, setGameState] = useState<"idle" | "playing" | "done">("idle");
-  const [input, setInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<PlayerOption[]>([]);
+  const [searching, setSearching] = useState(false);
   const [found, setFound] = useState<string[]>([]);
   const [misses, setMisses] = useState<string[]>([]);
   const [timeLeft, setTimeLeft] = useState(TIMER_SECONDS);
@@ -47,7 +51,6 @@ export default function RosterPage() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timesUpRef = useRef(false);
   const foundRef = useRef<string[]>([]);
   const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
@@ -62,8 +65,8 @@ export default function RosterPage() {
     setGameState("done");
     try {
       const res = await fanGamesApi.rosterComplete();
-      setRevealedRoster(res.data.roster || []);
-      if (res.data.completed) setCompleted(true);
+      setRevealedRoster(res.data.full_roster || []);
+      if (res.data.result?.completed) setCompleted(true);
     } catch {}
     if (auto) toast("Time's up!", { icon: "⏱" });
   }, []);
@@ -86,21 +89,34 @@ export default function RosterPage() {
       const result = data.result;
       if (result) {
         const rdata = result.result_data || {};
-        setFound(rdata.found || []);
-        foundRef.current = rdata.found || [];
+        const savedFound = rdata.found_names || rdata.found || [];
+        setFound(savedFound);
+        foundRef.current = savedFound;
         if (result.completed) {
           setCompleted(true);
           setGameState("done");
-          fanGamesApi.rosterComplete().then((r) => setRevealedRoster(r.data.roster || [])).catch(() => {});
+          fanGamesApi.rosterComplete().then((r) => setRevealedRoster(r.data.full_roster || [])).catch(() => {});
         }
       }
     }).catch(() => toast.error("Failed to load today's roster")).finally(() => setLoading(false));
   }, []);
 
+  // Player search autocomplete
+  useEffect(() => {
+    if (!searchQuery || searchQuery.length < 2) { setSearchResults([]); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fanGamesApi.playerSearch(searchQuery);
+        setSearchResults(res.data);
+      } finally { setSearching(false); }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
   const startGame = () => {
     setGameState("playing");
     setTimeLeft(TIMER_SECONDS);
-    timesUpRef.current = false;
     timerRef.current = setInterval(() => {
       setTimeLeft((t) => {
         if (t <= 1) {
@@ -116,18 +132,17 @@ export default function RosterPage() {
 
   useEffect(() => () => clearTimer(), []);
 
-  const handleGuess = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const name = input.trim();
-    if (!name || submitting || gameState !== "playing") return;
-    setInput("");
+  const handleGuess = async (playerName: string) => {
+    if (submitting || gameState !== "playing") return;
+    setSearchQuery("");
+    setSearchResults([]);
     setSubmitting(true);
     try {
-      const res = await fanGamesApi.rosterGuess(name);
-      const data: GuessResult = res.data;
+      const res = await fanGamesApi.rosterGuess(playerName);
+      const data = res.data;
       if (data.already_found) {
         toast("Already found!", { icon: "✓" });
-      } else if (data.matched && data.player_name) {
+      } else if (data.found && data.player_name) {
         setFound((prev) => {
           const next = [...prev, data.player_name!];
           foundRef.current = next;
@@ -138,10 +153,10 @@ export default function RosterPage() {
           endGame();
         }
       } else {
-        setMisses((prev) => [name, ...prev].slice(0, 20));
+        setMisses((prev) => [playerName, ...prev].slice(0, 20));
       }
     } catch {
-      toast.error("Error checking name");
+      toast.error("Error checking player");
     } finally {
       setSubmitting(false);
       inputRef.current?.focus();
@@ -213,7 +228,7 @@ export default function RosterPage() {
             </div>
           )}
 
-          {/* Team banner — hidden until game starts (or if already completed) */}
+          {/* Team banner */}
           {challenge && (gameState !== "idle" || completed) && (
             <div className="glass-card p-4 mb-4 flex items-center gap-4">
               <div className="w-12 h-12 rounded-xl bg-brand-500/20 border border-brand-400/30 flex items-center justify-center text-lg font-black text-brand-300">
@@ -241,7 +256,7 @@ export default function RosterPage() {
               <div className="text-5xl mb-4">⚾</div>
               <h2 className="text-xl font-bold text-white mb-2">Ready?</h2>
               <p className="text-slate-400 text-sm mb-6 max-w-sm mx-auto">
-                Type player names as fast as you can. Last names, first names, or full names all work.
+                Search for players and click to submit. Last names, first names, or full names all work.
                 You have {Math.floor(TIMER_SECONDS / 60)} minutes.
               </p>
               <button onClick={startGame} className="btn-primary px-8">Start Timer</button>
@@ -278,23 +293,53 @@ export default function RosterPage() {
                 </div>
               </div>
 
-              {/* Input */}
-              <form onSubmit={handleGuess} className="flex gap-2">
+              {/* Search autocomplete */}
+              <div className="glass-card p-4">
+                <label className="text-xs text-slate-500 mb-2 block">Search for a player</label>
                 <input
                   ref={inputRef}
                   type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Type a player name..."
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="flex-1 bg-surface-800/80 border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder:text-slate-600 focus:outline-none focus:border-brand-400/50 focus:ring-1 focus:ring-brand-400/30"
+                  disabled={submitting}
+                  className="input-field mb-3"
                 />
-                <button type="submit" disabled={submitting || !input.trim()} className="btn-primary px-5">
-                  {submitting ? "..." : "Got it"}
-                </button>
-              </form>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {searching && <div className="text-center py-3 text-slate-500 text-sm">Searching...</div>}
+                  {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
+                    <div className="text-center py-3 text-slate-500 text-sm">No players found</div>
+                  )}
+                  {searchResults.map((p) => {
+                    const alreadyFound = found.some((n) => n.toLowerCase() === p.full_name.toLowerCase());
+                    return (
+                      <button
+                        key={`${p.id}`}
+                        type="button"
+                        onMouseDown={(e) => { e.preventDefault(); if (!alreadyFound) handleGuess(p.full_name); }}
+                        disabled={alreadyFound || submitting}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-left",
+                          alreadyFound ? "opacity-40 cursor-not-allowed" : "hover:bg-white/5 cursor-pointer"
+                        )}
+                      >
+                        <div className={cn("position-badge text-xs shrink-0",
+                          p.position === "P" ? "bg-red-500/20 text-red-300" : "bg-brand-500/20 text-brand-300")}>
+                          {p.position || "—"}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-white font-medium truncate">{p.full_name}</div>
+                          <div className="text-xs text-slate-500">{p.team_name}</div>
+                        </div>
+                        {alreadyFound && <span className="text-xs text-neon-green shrink-0">✓ found</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
               {/* Give up */}
               <div className="text-center">
@@ -320,7 +365,7 @@ export default function RosterPage() {
               {/* Recent misses */}
               {misses.length > 0 && (
                 <div>
-                  <div className="text-xs text-slate-500 uppercase tracking-widest mb-2">Not matched</div>
+                  <div className="text-xs text-slate-500 uppercase tracking-widest mb-2">Not on this roster</div>
                   <div className="flex flex-wrap gap-1.5">
                     {misses.slice(0, 8).map((name, i) => (
                       <span key={i} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-slate-500 text-xs">
@@ -345,7 +390,7 @@ export default function RosterPage() {
                   {found.length}<span className="text-slate-500 font-normal text-lg">/{challenge?.player_count}</span>
                 </div>
                 <div className="text-slate-400 text-sm mb-1">
-                  {challenge && found.length === challenge.player_count ? "Perfect roster!" : `players found`}
+                  {challenge && found.length === challenge.player_count ? "Perfect roster!" : "players found"}
                 </div>
                 <div className="text-xs text-slate-500">Come back tomorrow for a new team.</div>
               </div>

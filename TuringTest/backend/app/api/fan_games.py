@@ -409,10 +409,18 @@ def guess_submit():
 
     if player_id is None or player_id == "":
         return jsonify({"error": "player_id required"}), 400
+
+    # Resolve to postgres Player — player_id may be a postgres integer ID or a data.db external_player_id
+    pg_player = None
     try:
-        pid = int(player_id)
+        pg_player = Player.query.get(int(player_id))
     except (TypeError, ValueError):
-        return jsonify({"error": "Invalid player_id"}), 400
+        pass
+    if not pg_player:
+        pg_player = Player.query.filter_by(external_player_id=str(player_id)).first()
+    if not pg_player:
+        return jsonify({"error": "Player not found"}), 404
+    pid = pg_player.id  # always use postgres integer ID for feedback
 
     challenge, err = _get_or_create_challenge("guess", generate_guess_challenge)
     if err:
@@ -781,6 +789,7 @@ def target_leaderboard():
             "display_name": user.display_name if user else "Unknown",
             "score": r.score,
             "totals": rdata.get("totals", {}),
+            "selected_players": rdata.get("selected_players", []),
         })
     return jsonify(board)
 
@@ -853,7 +862,7 @@ def higher_lower_answer():
 
     val_a = val_a or 0
     val_b = val_b or 0
-    correct_answer = "higher" if val_b >= val_a else "lower"
+    correct_answer = "higher" if val_b > val_a else "lower"
     correct = answer.lower() == correct_answer
 
     # Look up historical % BEFORE recording this answer, then update scenario counts

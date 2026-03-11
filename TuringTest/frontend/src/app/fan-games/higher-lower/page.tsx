@@ -387,11 +387,11 @@ export default function HigherLowerPage() {
                       ? `✓ Correct! ${lastResult.correct_answer === "higher" ? "↑" : "↓"} Next round...`
                       : `✗ Wrong! It was ${lastResult.value_b} (${lastResult.correct_answer})`}
                   </div>
-                  {lastResult.historical_pct !== null && (
-                    <div className="text-xs font-normal opacity-75">
-                      {lastResult.historical_pct}% of players got this right
-                    </div>
-                  )}
+                  <div className="text-xs font-normal opacity-75">
+                    {lastResult.historical_pct !== null
+                      ? `${lastResult.historical_pct}% of players got this right`
+                      : "Be the first to answer this matchup!"}
+                  </div>
                 </div>
               )}
             </div>

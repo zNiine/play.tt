@@ -48,7 +48,7 @@ interface LeaderboardEntry {
 }
 
 interface PlayerOption {
-  id: number;
+  id: number | string;
   full_name: string;
   position: string;
   team: string;
@@ -329,7 +329,7 @@ export default function GuessThePlayerPage() {
                   <div className="text-center py-3 text-slate-500 text-sm">No players found</div>
                 )}
                 {searchResults.map((p) => {
-                  const alreadyGuessed = guesses.some((g) => g.guessed_player.id === p.id);
+                  const alreadyGuessed = guesses.some((g) => g.guessed_player.full_name === p.full_name);
                   return (
                     <button
                       key={p.id}

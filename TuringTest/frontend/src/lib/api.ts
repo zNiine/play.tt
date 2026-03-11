@@ -119,7 +119,7 @@ export const fanGamesApi = {
 
   // Guess the Player
   guessToday: () => api.get("/api/fan-games/guess/today"),
-  guessSubmit: (player_id: number) =>
+  guessSubmit: (player_id: number | string) =>
     api.post("/api/fan-games/guess/submit", { player_id }),
   guessResult: () => api.get("/api/fan-games/guess/result"),
   guessLeaderboard: () => api.get("/api/fan-games/guess/leaderboard"),
