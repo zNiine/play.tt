@@ -12,8 +12,8 @@ class BaseConfig:
         "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/turingtest"
     )
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    CELERY_RESULT_BACKEND = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    broker_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    result_backend = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "jwt-secret-change-in-production")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
@@ -23,7 +23,7 @@ class BaseConfig:
     MAIL_USE_TLS = True
     MAIL_USERNAME = os.environ.get("MAIL_USERNAME")
     MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD")
-
+    broker_connection_retry_on_startup = True
 
 class DevelopmentConfig(BaseConfig):
     DEBUG = True
