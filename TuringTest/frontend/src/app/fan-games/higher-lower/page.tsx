@@ -51,6 +51,7 @@ export default function HigherLowerPage() {
   const [tab, setTab] = useState<"play" | "leaderboard">("play");
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [bannerMsg, setBannerMsg] = useState<{ correct: boolean; text: string } | null>(null);
   const [availableSeasons, setAvailableSeasons] = useState<SeasonOption[]>([]);
   const [selectedSeasons, setSelectedSeasons] = useState<string[]>([]); // empty = all
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -134,6 +135,7 @@ export default function HigherLowerPage() {
     if (!pair || answered) return;
     clearTimer();
     setAnswered(true);
+    setBannerMsg(null);
 
     try {
       const res = await fanGamesApi.higherLowerAnswer({
@@ -146,6 +148,12 @@ export default function HigherLowerPage() {
       });
       const data = res.data;
       setLastResult({ correct: data.correct, value_b: data.value_b, correct_answer: data.correct_answer, historical_pct: data.historical_pct ?? null });
+      setBannerMsg({
+        correct: data.correct,
+        text: data.historical_pct !== null
+          ? `${data.historical_pct}% of players got this right`
+          : "You are the first to answer this matchup!",
+      });
 
       if (data.correct) {
         const newStreak = streakRef.current + 1;
@@ -155,7 +163,7 @@ export default function HigherLowerPage() {
         setTimeout(async () => {
           await loadPair(selectedSeasons);
           startTimer();
-        }, 800);
+        }, 2500);
       } else {
         setTimeout(() => endGame(), 1800);
       }
@@ -387,11 +395,16 @@ export default function HigherLowerPage() {
                       ? `✓ Correct! ${lastResult.correct_answer === "higher" ? "↑" : "↓"} Next round...`
                       : `✗ Wrong! It was ${lastResult.value_b} (${lastResult.correct_answer})`}
                   </div>
-                  <div className="text-xs font-normal opacity-75">
-                    {lastResult.historical_pct !== null
-                      ? `${lastResult.historical_pct}% of players got this right`
-                      : "Be the first to answer this matchup!"}
-                  </div>
+                  {bannerMsg && (
+                    <div className="text-xs font-normal opacity-75">{bannerMsg.text}</div>
+                  )}
+                </div>
+              )}
+
+              {!answered && bannerMsg && (
+                <div className={cn("text-center py-2 px-4 rounded-xl text-xs font-normal opacity-75",
+                  bannerMsg.correct ? "bg-neon-green/10 text-neon-green" : "bg-red-500/10 text-red-400")}>
+                  {bannerMsg.text}
                 </div>
               )}
             </div>
