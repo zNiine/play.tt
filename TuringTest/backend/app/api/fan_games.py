@@ -34,7 +34,7 @@ from sqlalchemy import desc
 
 from ..extensions import db
 from ..models import Player, Team
-from ..models.fan_games import DailyChallenge, FanGameResult, HigherLowerScore
+from ..models.fan_games import DailyChallenge, FanGameResult, HigherLowerScore, HigherLowerScenario
 from ..services.fan_games_service import (
     generate_grid_challenge, validate_grid_answer,
     generate_guess_challenge, get_guess_feedback,
@@ -812,57 +812,106 @@ def higher_lower_pair():
 def higher_lower_answer():
     """
     Validate an answer for a higher-lower pair.
-    Client sends: player_a_id, player_b_id, stat_key, answer ('higher'|'lower')
-    Server re-computes the correct answer from DB.
+    Client sends: player_a_id, player_b_id, stat_key, answer ('higher'|'lower'), season_a, season_b.
+    player_a_id/player_b_id are data.db player_ids (strings).
+    Returns: correct, correct_answer, value_b, historical_pct (% of past users who got this right).
     """
     data = request.get_json() or {}
-    player_a_id = data.get("player_a_id")
-    player_b_id = data.get("player_b_id")
+    player_a_id = str(data.get("player_a_id") or "")
+    player_b_id = str(data.get("player_b_id") or "")
     stat_key = data.get("stat_key")
     answer = data.get("answer")  # 'higher' or 'lower'
-    season_a = data.get("season_a")
-    season_b = data.get("season_b")
+    season_a = data.get("season_a") or None
+    season_b = data.get("season_b") or None
 
     if not all([player_a_id, player_b_id, stat_key, answer]):
         return jsonify({"error": "player_a_id, player_b_id, stat_key, answer required"}), 400
 
-    # Validate using season-specific stats when available, fall back to career
+    # Look up season stats by data.db player_id directly (handles multi-team correctly)
     val_a = val_b = None
     try:
-        from ..services.data_db import get_season_stats_by_roster_name
-        p_a = Player.query.get(player_a_id)
-        p_b_obj = Player.query.get(player_b_id)
-        if season_a and p_a:
-            s = get_season_stats_by_roster_name(season_a)
-            val_a = s.get((p_a.full_name or "").strip().lower(), {}).get(stat_key)
-        if season_b and p_b_obj:
-            s = get_season_stats_by_roster_name(season_b)
-            val_b = s.get((p_b_obj.full_name or "").strip().lower(), {}).get(stat_key)
+        from ..services.data_db import get_batter_season_stats, get_batter_career_stats
+        stats_map = get_batter_season_stats()  # (player_id, season) -> stats
+
+        if season_a:
+            s = stats_map.get((player_a_id, season_a), {})
+            val_a = s.get(stat_key)
+        if season_b:
+            s = stats_map.get((player_b_id, season_b), {})
+            val_b = s.get(stat_key)
+
+        # Fall back to career stats for any missing values
+        if val_a is None or val_b is None:
+            career = get_batter_career_stats()
+            if val_a is None:
+                val_a = career.get(player_a_id, {}).get(stat_key, 0)
+            if val_b is None:
+                val_b = career.get(player_b_id, {}).get(stat_key, 0)
     except Exception:
-        pass
+        val_a = val_a or 0
+        val_b = val_b or 0
 
-    if val_a is None or val_b is None:
-        from ..services.fan_games_service import _higher_lower_agg
-        agg = _higher_lower_agg()
-        if val_a is None:
-            val_a = agg.get(int(player_a_id), {}).get(stat_key, 0)
-        if val_b is None:
-            val_b = agg.get(int(player_b_id), {}).get(stat_key, 0)
-
+    val_a = val_a or 0
+    val_b = val_b or 0
     correct_answer = "higher" if val_b >= val_a else "lower"
-
     correct = answer.lower() == correct_answer
 
-    p_b = Player.query.get(player_b_id)
+    # Look up historical % BEFORE recording this answer, then update scenario counts
+    historical_pct = None
+    try:
+        season_a_key = season_a or ""
+        season_b_key = season_b or ""
+        scenario = HigherLowerScenario.query.filter_by(
+            player_a_id=player_a_id,
+            season_a=season_a_key,
+            player_b_id=player_b_id,
+            season_b=season_b_key,
+            stat_key=stat_key,
+        ).first()
+
+        if scenario:
+            historical_pct = scenario.historical_pct  # snapshot before this answer
+            scenario.total_count += 1
+            if correct:
+                scenario.correct_count += 1
+        else:
+            scenario = HigherLowerScenario(
+                player_a_id=player_a_id,
+                season_a=season_a_key,
+                player_b_id=player_b_id,
+                season_b=season_b_key,
+                stat_key=stat_key,
+                correct_count=1 if correct else 0,
+                total_count=1,
+            )
+            db.session.add(scenario)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # Resolve player_b display name (postgres if available, else data.db)
+    pg_b = Player.query.filter_by(external_player_id=player_b_id).first()
+    player_b_info = None
+    if pg_b:
+        player_b_info = {
+            "id": player_b_id,
+            "full_name": pg_b.full_name,
+            "team": pg_b.team.team_code if pg_b.team else None,
+        }
+    else:
+        try:
+            from ..services.data_db import get_player_name_by_id
+            pname = get_player_name_by_id(player_b_id)
+            player_b_info = {"id": player_b_id, "full_name": pname or player_b_id}
+        except Exception:
+            player_b_info = {"id": player_b_id}
+
     return jsonify({
         "correct": correct,
         "correct_answer": correct_answer,
         "value_b": val_b,
-        "player_b": {
-            "id": p_b.id,
-            "full_name": p_b.full_name,
-            "team": p_b.team.team_code if p_b and p_b.team else None,
-        } if p_b else None,
+        "player_b": player_b_info,
+        "historical_pct": historical_pct,  # None on first ever answer for this pair
     })
 
 

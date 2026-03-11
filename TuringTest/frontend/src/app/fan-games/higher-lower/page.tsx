@@ -47,7 +47,7 @@ export default function HigherLowerPage() {
   const [bestStreak, setBestStreak] = useState(0);
   const [timeLeft, setTimeLeft] = useState(TIMER_SECONDS);
   const [answered, setAnswered] = useState(false);
-  const [lastResult, setLastResult] = useState<{ correct: boolean; value_b: number; correct_answer: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ correct: boolean; value_b: number; correct_answer: string; historical_pct: number | null } | null>(null);
   const [tab, setTab] = useState<"play" | "leaderboard">("play");
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -145,7 +145,7 @@ export default function HigherLowerPage() {
         season_b: pair.player_b.season ?? null,
       });
       const data = res.data;
-      setLastResult({ correct: data.correct, value_b: data.value_b, correct_answer: data.correct_answer });
+      setLastResult({ correct: data.correct, value_b: data.value_b, correct_answer: data.correct_answer, historical_pct: data.historical_pct ?? null });
 
       if (data.correct) {
         const newStreak = streakRef.current + 1;
@@ -380,9 +380,18 @@ export default function HigherLowerPage() {
               )}
 
               {answered && lastResult && (
-                <div className={cn("text-center py-3 rounded-xl font-semibold text-sm",
+                <div className={cn("text-center py-3 px-4 rounded-xl font-semibold text-sm space-y-1",
                   lastResult.correct ? "bg-neon-green/10 text-neon-green" : "bg-red-500/10 text-red-400")}>
-                  {lastResult.correct ? `✓ Correct! ${lastResult.correct_answer === "higher" ? "↑" : "↓"} Next round...` : `✗ Wrong! It was ${lastResult.value_b} (${lastResult.correct_answer})`}
+                  <div>
+                    {lastResult.correct
+                      ? `✓ Correct! ${lastResult.correct_answer === "higher" ? "↑" : "↓"} Next round...`
+                      : `✗ Wrong! It was ${lastResult.value_b} (${lastResult.correct_answer})`}
+                  </div>
+                  {lastResult.historical_pct !== null && (
+                    <div className="text-xs font-normal opacity-75">
+                      {lastResult.historical_pct}% of players got this right
+                    </div>
+                  )}
                 </div>
               )}
             </div>

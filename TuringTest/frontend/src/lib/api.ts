@@ -111,7 +111,7 @@ export const fanGamesApi = {
 
   // Immaculate Grid
   gridToday: () => api.get("/api/fan-games/grid/today"),
-  gridGuess: (data: { row: number; col: number; player_id: number }) =>
+  gridGuess: (data: { row: number; col: number; player_id: string }) =>
     api.post("/api/fan-games/grid/guess", data),
   gridResult: () => api.get("/api/fan-games/grid/result"),
   gridAnswers: () => api.get("/api/fan-games/grid/answers"),

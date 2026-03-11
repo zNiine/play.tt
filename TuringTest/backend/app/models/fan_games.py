@@ -90,3 +90,33 @@ class HigherLowerScore(db.Model):
             "streak": self.streak,
             "achieved_at": self.achieved_at.isoformat() if self.achieved_at else None,
         }
+
+
+class HigherLowerScenario(db.Model):
+    """Tracks aggregate correct/total counts for each unique higher-or-lower comparison."""
+    __tablename__ = "higher_lower_scenarios"
+
+    id = db.Column(db.Integer, primary_key=True)
+    # data.db player_ids (strings) + seasons identify a unique comparison
+    player_a_id = db.Column(db.String(50), nullable=False)
+    season_a = db.Column(db.String(50), nullable=True)
+    player_b_id = db.Column(db.String(50), nullable=False)
+    season_b = db.Column(db.String(50), nullable=True)
+    stat_key = db.Column(db.String(20), nullable=False)
+    correct_count = db.Column(db.Integer, nullable=False, default=0)
+    total_count = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(
+        db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint("player_a_id", "season_a", "player_b_id", "season_b", "stat_key",
+                            name="uq_hl_scenario"),
+    )
+
+    @property
+    def historical_pct(self):
+        """Percentage of users who answered correctly (before the current answer is counted)."""
+        if self.total_count == 0:
+            return None
+        return round(100.0 * self.correct_count / self.total_count, 1)
