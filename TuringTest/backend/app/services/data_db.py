@@ -449,6 +449,133 @@ def get_season_stats_by_roster_name(season):
         c.close()
 
 
+def get_all_historical_player_teams(regular_only=True):
+    """
+    Returns dict: {player_id (str) -> set of team names} from batters table.
+    Covers all ALPB regular seasons when regular_only=True.
+    """
+    c = _conn()
+    if not c:
+        return {}
+    try:
+        if regular_only:
+            rows = c.execute("""
+                SELECT DISTINCT player_id, team, season FROM batters
+                WHERE player_id IS NOT NULL AND trim(player_id) != ''
+                  AND team IS NOT NULL AND trim(team) != ''
+                  AND season IS NOT NULL
+            """).fetchall()
+        else:
+            rows = c.execute("""
+                SELECT DISTINCT player_id, team, season FROM batters
+                WHERE player_id IS NOT NULL AND trim(player_id) != ''
+                  AND team IS NOT NULL AND trim(team) != ''
+            """).fetchall()
+        this_year = datetime.now().year
+        out = {}
+        for player_id, team, season in rows:
+            if regular_only:
+                s = (season or "").strip().upper()
+                y = _year_from_season(season)
+                if not (s.startswith("ALPB") and "TRAINING" not in s
+                        and "PLAYOFF" not in s and y and y <= this_year):
+                    continue
+            pid = str(player_id)
+            if pid not in out:
+                out[pid] = set()
+            out[pid].add(team)
+        return out
+    finally:
+        c.close()
+
+
+def get_player_name_by_id(player_id):
+    """Return the most common/recent player name for a data.db player_id."""
+    c = _conn()
+    if not c:
+        return None
+    try:
+        pid = str(player_id)
+        # Try players table first (has clean roster names)
+        rows = c.execute("""
+            SELECT roster_player_name FROM players
+            WHERE player_url LIKE ? AND roster_player_name IS NOT NULL
+            ORDER BY season DESC LIMIT 1
+        """, (f"%playerid={pid}%",)).fetchall()
+        if rows and rows[0][0]:
+            return rows[0][0].strip()
+        # Fallback to batters table
+        rows = c.execute("""
+            SELECT player FROM batters WHERE player_id = ? AND player IS NOT NULL LIMIT 1
+        """, (pid,)).fetchall()
+        return rows[0][0].strip() if rows else None
+    finally:
+        c.close()
+
+
+def get_historical_player_positions():
+    """
+    Returns {player_id (str): position (str)} from data.db players table.
+    Uses roster_position or profile_position, prefers latest season.
+    """
+    c = _conn()
+    if not c:
+        return {}
+    try:
+        rows = c.execute("""
+            SELECT p.player_url, p.roster_position, p.profile_position, p.season
+            FROM players p
+            WHERE p.player_url IS NOT NULL AND p.player_url LIKE '%playerid=%'
+            ORDER BY p.season DESC
+        """).fetchall()
+        import re as _re
+        out = {}
+        for player_url, roster_pos, profile_pos, season in rows:
+            m = _re.search(r"playerid=(\d+)", player_url, _re.IGNORECASE)
+            if not m:
+                continue
+            pid = m.group(1)
+            if pid in out:
+                continue  # already set from a later season
+            pos = (roster_pos or profile_pos or "").strip()
+            if pos:
+                # Normalize common position strings
+                pos = pos.upper().split("/")[0].strip()
+                out[pid] = pos
+        return out
+    finally:
+        c.close()
+
+
+def get_all_batter_player_ids_by_season():
+    """
+    Returns dict: {(player_id, season) -> player_name} for all ALPB regular-season batters.
+    """
+    c = _conn()
+    if not c:
+        return {}
+    try:
+        rows = c.execute("""
+            SELECT DISTINCT player_id, season, player FROM batters
+            WHERE player_id IS NOT NULL AND trim(player_id) != ''
+              AND season IS NOT NULL AND log_type = 'batting'
+        """).fetchall()
+        this_year = datetime.now().year
+        out = {}
+        for player_id, season, player_name in rows:
+            s = (season or "").strip().upper()
+            y = _year_from_season(season)
+            if not (s.startswith("ALPB") and "TRAINING" not in s
+                    and "PLAYOFF" not in s and y and y <= this_year):
+                continue
+            key = (str(player_id), season)
+            if key not in out and player_name:
+                out[key] = player_name.strip()
+        return out
+    finally:
+        c.close()
+
+
 def search_batter_seasons_by_name(q, min_ab=100):
     """
     Search batter season stats by player name (case-insensitive). Only returns (player_id, season) with AB >= min_ab.

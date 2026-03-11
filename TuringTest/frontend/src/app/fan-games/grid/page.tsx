@@ -22,14 +22,14 @@ interface GridChallenge {
 }
 
 interface CellState {
-  player_id?: number;
+  player_id?: string;
   player_name?: string;
   correct: boolean;
   attempted: boolean;
 }
 
 interface PlayerOption {
-  id: number;
+  id: string; // data.db player_id (string)
   full_name: string;
   position: string;
   team: string;
@@ -73,7 +73,7 @@ export default function ImmaculateGridPage() {
           Object.fromEntries(
             Object.entries(rdata.picks || {}).map(([k, v]: [string, any]) => [
               k,
-              { player_id: v.player?.id, player_name: v.player?.full_name, correct: v.correct, attempted: true },
+              { player_id: String(v.player?.id ?? ""), player_name: v.player?.full_name, correct: v.correct, attempted: true },
             ])
           )
         );
@@ -126,14 +126,14 @@ export default function ImmaculateGridPage() {
     if (!user) { toast.error("Sign in to play"); return; }
 
     try {
-      const res = await fanGamesApi.gridGuess({ row, col, player_id: player.id });
+      const res = await fanGamesApi.gridGuess({ row, col, player_id: String(player.id) });
       const data = res.data;
       const key = `${row},${col}`;
 
       if (data.valid) {
         setCells((prev) => ({
           ...prev,
-          [key]: { player_id: player.id, player_name: player.full_name, correct: true, attempted: true },
+          [key]: { player_id: String(player.id), player_name: player.full_name, correct: true, attempted: true },
         }));
         toast.success(`${player.full_name} is correct!`);
       } else {

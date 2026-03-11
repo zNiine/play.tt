@@ -15,6 +15,51 @@ from ..models import Player, Team, PlayerGameStats, Game
 
 # ── Category helpers ──────────────────────────────────────────────────────────
 
+# Mapping from data.db team names (lowercased) -> postgres team_code
+DATA_DB_TEAM_NAME_TO_CODE = {
+    "hagerstown": "HAG",
+    "hagerstown flying boxcars": "HAG",
+    "lancaster": "LAN",
+    "lancaster stormers": "LAN",
+    "long island": "LID",
+    "long island ducks": "LID",
+    "staten island ferry hawks": "SIF",
+    "staten island": "SIF",
+    "york": "YRK",
+    "york revolution": "YRK",
+    "charleston dirty birds": "CHS",
+    "charleston": "CHS",
+    "gastonia": "GAS",
+    "gastonia ghost peppers": "GAS",
+    "gastonia baseball club": "GAS",
+    "high point": "HPT",
+    "high point rockers": "HPT",
+    "lexington": "LEX",
+    "lexington legends": "LEX",
+    "lexington counter clocks": "LEX",
+    "somerset": "SOM",
+    "southern maryland": "SOM",
+    "so. maryland": "SOM",
+    "southern maryland blue crabs": "SOM",
+    # Legacy/former ALPB teams - map to closest current or skip
+    "new britain bees": None,
+    "sugar land": None,
+    "spire city": None,
+    "kentucky": None,
+    "road warriors": None,
+    "bridgeport": None,
+    "camden riversharks": None,
+    "newark bears": None,
+}
+
+
+def _data_db_team_to_code(team_name):
+    """Map data.db team name to postgres team_code. Returns None if unknown/non-current."""
+    if not team_name:
+        return None
+    return DATA_DB_TEAM_NAME_TO_CODE.get(team_name.strip().lower())
+
+
 POSITION_GROUPS = {
     "P": "pitcher",
     "C": "catcher",
@@ -149,83 +194,147 @@ def _category_label(category):
 
 # ── Immaculate Grid ───────────────────────────────────────────────────────────
 
-def _players_matching_category(category, players, data_by_name, agg_pg):
-    """Return list of player IDs matching a given category string."""
+def _build_grid_player_pool():
+    """
+    Build the complete player pool for the grid from data.db (all historical ALPB players).
+    Returns:
+      player_pool: {data_player_id (str) -> {name, team_codes: set, position: str, career_stats: dict}}
+    Uses data.db player_id as the canonical identifier so ALL historical players are included.
+    """
+    try:
+        from .data_db import (
+            get_all_historical_player_teams,
+            get_historical_player_positions,
+            get_batter_career_stats,
+        )
+        team_history = get_all_historical_player_teams(regular_only=True)
+        positions = get_historical_player_positions()
+        career_stats = get_batter_career_stats()  # {player_id -> stats}
+
+        pool = {}
+        for pid, teams in team_history.items():
+            # Map data.db team names -> postgres team_codes (skip unknown/legacy teams)
+            team_codes = set()
+            for tn in teams:
+                code = _data_db_team_to_code(tn)
+                if code:
+                    team_codes.add(code)
+
+            stats = career_stats.get(pid, {})
+            pool[pid] = {
+                "name": stats.get("player_name") or pid,
+                "team_codes": team_codes,
+                "position": positions.get(pid, ""),
+                "career_stats": stats,
+            }
+        return pool
+    except Exception:
+        return {}
+
+
+def _grid_players_matching_category(category, player_pool, data_by_name=None, agg_pg=None):
+    """
+    Return list of data.db player_ids (strings) matching a category.
+    player_pool: {player_id -> {team_codes, position, career_stats}}
+    """
     result = []
-    for p in players:
+    for pid, info in player_pool.items():
         if category.startswith("team:"):
-            if p.team and p.team.team_code == category[5:]:
-                result.append(p.id)
+            if category[5:] in info["team_codes"]:
+                result.append(pid)
         elif category.startswith("pos:"):
-            if p.primary_position == category[4:]:
-                result.append(p.id)
+            pos = (info.get("position") or "").upper().split("/")[0].strip()
+            if pos == category[4:]:
+                result.append(pid)
         elif category.startswith("pos_group:"):
-            if POSITION_GROUPS.get(p.primary_position) == category[10:]:
-                result.append(p.id)
+            pos = (info.get("position") or "").upper().split("/")[0].strip()
+            if POSITION_GROUPS.get(pos) == category[10:]:
+                result.append(pid)
         elif category in STAT_THRESHOLDS:
             _, stat_fn, threshold = STAT_THRESHOLDS[category]
-            # Prefer data.db stats; fall back to postgres aggregated stats
-            stats = _get_player_data_stats(p, data_by_name) or agg_pg.get(p.id, {})
+            stats = info.get("career_stats", {})
             if stat_fn(stats) >= threshold:
-                result.append(p.id)
+                result.append(pid)
     return result
 
 
 def generate_grid_challenge(challenge_date: date) -> dict:
     """
-    Generate a 3x3 Immaculate Grid challenge.
+    Generate a 3x3 Immaculate Grid challenge using ALL historical ALPB players from data.db.
     Rows = 3 teams. Cols = mix of stat threshold, position, or position-group categories.
-    Uses data.db career stats for stat threshold validation.
+    valid_answers stores data.db player_ids (strings) so historical players are included.
     Ensures every cell has ≥1 valid answer.
     """
-    players = Player.query.filter_by(active=True).all()
     teams = Team.query.all()
-    if not players or not teams:
-        raise ValueError("No players or teams available for grid")
+    if not teams:
+        raise ValueError("No teams available for grid")
 
-    team_codes = [t.team_code for t in teams if any(p.team and p.team.team_code == t.team_code for p in players)]
+    # Build pool from all historical data.db players (not just active postgres players)
+    player_pool = _build_grid_player_pool()
+
+    if not player_pool:
+        # Fallback: use postgres players only
+        players = Player.query.all()
+        if not players:
+            raise ValueError("No players available for grid")
+        data_by_name = _load_data_db_career_stats_by_name()
+        agg_pg = _aggregate_player_stats()
+        player_pool = {}
+        for p in players:
+            tc = {p.team.team_code} if p.team else set()
+            stats = _get_player_data_stats(p, data_by_name) or agg_pg.get(p.id, {})
+            player_pool[str(p.id)] = {
+                "name": p.full_name,
+                "team_codes": tc,
+                "position": p.primary_position or "",
+                "career_stats": stats,
+            }
+
+    # Determine which team_codes have at least 1 player in pool
+    team_codes = [
+        t.team_code for t in teams
+        if any(t.team_code in info["team_codes"] for info in player_pool.values())
+    ]
     if len(team_codes) < 3:
-        raise ValueError("Need at least 3 teams with players for grid")
+        raise ValueError("Need at least 3 teams with historical players for grid")
 
-    # Load data.db career stats for stat thresholds
-    data_by_name = _load_data_db_career_stats_by_name()
-    agg_pg = _aggregate_player_stats()
+    # Build candidate column categories
+    positions_in_use = list({
+        (info.get("position") or "").upper().split("/")[0].strip()
+        for info in player_pool.values()
+        if info.get("position")
+    })
+    positions_in_use = [p for p in positions_in_use if p in POSITION_GROUPS or p in POSITION_LABELS]
 
-    # Build candidate column categories: stat thresholds + positions + position groups
-    positions_in_use = list({p.primary_position for p in players if p.primary_position})
     pos_groups_in_use = list({POSITION_GROUPS[p] for p in positions_in_use if p in POSITION_GROUPS})
 
     stat_col_candidates = []
-    # Add usable stat threshold categories (those with ≥3 qualifying players)
-    for key in STAT_THRESHOLDS:
-        qids = _players_matching_category(key, players, data_by_name, agg_pg)
-        if len(qids) >= 3:
-            stat_col_candidates.append(f"stat:{key}")
-
     pos_col_candidates = []
-    # Use position groups (not individual positions to avoid overlap)
+
     for grp in pos_groups_in_use:
         pos_col_candidates.append(f"pos_group:{grp}")
-    # Add specific positions only if position group doesn't exist
     for pos in positions_in_use:
         grp = POSITION_GROUPS.get(pos)
         if not grp or f"pos_group:{grp}" not in pos_col_candidates:
             pos_col_candidates.append(f"pos:{pos}")
 
+    # Pre-compute player_ids per category
+    cat_players: dict = {}
+    row_cats = [f"team:{tc}" for tc in team_codes]
+    all_cats = row_cats + [f"stat:{k}" for k in STAT_THRESHOLDS] + pos_col_candidates
+
+    for cat in all_cats:
+        real_cat = cat[5:] if cat.startswith("stat:") else cat
+        matched = _grid_players_matching_category(real_cat, player_pool)
+        if cat.startswith("stat:") and len(matched) >= 3:
+            stat_col_candidates.append(cat)
+        cat_players[cat] = matched
+
     col_candidates = stat_col_candidates + pos_col_candidates
     random.shuffle(stat_col_candidates)
     random.shuffle(pos_col_candidates)
 
-    # Pre-compute player IDs per category for fast lookup
-    cat_players: dict = {}
-    row_cats = [f"team:{tc}" for tc in team_codes]
-    all_cats = row_cats + col_candidates
-    for cat in all_cats:
-        real_cat = cat[5:] if cat.startswith("stat:") else cat
-        cat_players[cat] = _players_matching_category(real_cat, players, data_by_name, agg_pg)
-
     # Find 3 rows (teams) and 3 cols where all 9 cells have ≥1 valid answer
-    # Try to guarantee at least 1 stat threshold column when available
     chosen_rows = None
     chosen_cols = None
     random.shuffle(team_codes)
@@ -234,7 +343,6 @@ def generate_grid_challenge(challenge_date: date) -> dict:
         r3 = random.sample(row_cats, min(3, len(row_cats)))
         if len(col_candidates) < 3:
             break
-        # Build c3: prefer 1-2 stat cols + rest position cols
         if stat_col_candidates and pos_col_candidates:
             n_stat = random.randint(1, min(2, len(stat_col_candidates)))
             n_pos = 3 - n_stat
@@ -265,7 +373,7 @@ def generate_grid_challenge(challenge_date: date) -> dict:
         chosen_rows = [f"team:{tc}" for tc in team_codes[:3]]
         chosen_cols = [f"pos:{pos}" for pos in positions_shuffled[:3]]
 
-    # Build valid_answers map (intersection of row and col player sets)
+    # Build valid_answers map: stores data.db player_ids as strings
     valid_answers = {}
     for ri, r in enumerate(chosen_rows):
         r_ids = set(cat_players.get(r, []))
@@ -286,10 +394,13 @@ def generate_grid_challenge(challenge_date: date) -> dict:
     }
 
 
-def validate_grid_answer(challenge_data: dict, row: int, col: int, player_id: int) -> bool:
-    """Return True if player_id is a valid answer for grid cell (row, col)."""
+def validate_grid_answer(challenge_data: dict, row: int, col: int, player_id) -> bool:
+    """Return True if player_id is a valid answer for grid cell (row, col).
+    player_id can be a data.db string id or a legacy postgres int id."""
     key = f"{row},{col}"
-    return player_id in challenge_data.get("valid_answers", {}).get(key, [])
+    valid = challenge_data.get("valid_answers", {}).get(key, [])
+    pid_str = str(player_id)
+    return pid_str in [str(v) for v in valid]
 
 
 def get_grid_cell_answer_count(challenge_data: dict, row: int, col: int, player_id: int, results) -> int:
@@ -631,14 +742,19 @@ def get_higher_lower_pair(allowed_seasons=None) -> dict:
     """
     Pick two players and a stat to compare, each from independently chosen seasons.
     allowed_seasons: list of season strings to filter by; None/empty = all regular seasons.
-    Each player can be from a different season.
+    Matches data.db players to postgres by external_player_id; historical players without
+    a postgres record are represented using data.db name/team data directly.
     """
-    active_players = Player.query.filter_by(active=True).all()
-    all_players = active_players if len(active_players) >= 2 else Player.query.all()
-    if len(all_players) < 2:
-        return None
-
-    name_to_player = {(p.full_name or "").strip().lower(): p for p in all_players}
+    # Build external_player_id -> postgres Player mapping (includes ALL postgres players)
+    all_pg_players = Player.query.all()
+    ext_id_to_player = {}
+    name_to_player = {}
+    for p in all_pg_players:
+        if p.external_player_id:
+            ext_id_to_player[str(p.external_player_id)] = p
+        name_key = (p.full_name or "").strip().lower()
+        if name_key:
+            name_to_player[name_key] = p
 
     # Determine which regular seasons to use
     regular = []
@@ -656,26 +772,81 @@ def get_higher_lower_pair(allowed_seasons=None) -> dict:
     except Exception:
         pass
 
-    # Build pool: one entry per (player, season) combination
-    # pool entry: (Player, stats_dict, season_str, season_year)
+    # Build pool: one entry per (player, season) combination from data.db
+    # pool entry: (player_info_dict, stats_dict, season_str, season_year)
+    # player_info_dict: {id, full_name, team, team_name, position}
     pool = []
     if regular:
         try:
-            from .data_db import get_season_stats_by_roster_name, _year_from_season
-            for season_str in regular:
-                season_year = _year_from_season(season_str)
-                data_by_name = get_season_stats_by_roster_name(season_str)
-                for name_lower, stats in data_by_name.items():
-                    p = name_to_player.get(name_lower)
-                    if p and any(stats.get(k, 0) > 0 for k in ("H", "HR", "RBI", "SB", "R", "BB")):
-                        pool.append((p, stats, season_str, season_year))
+            from .data_db import get_batter_season_stats, get_all_historical_player_teams, _year_from_season
+            stats_map = get_batter_season_stats()  # (player_id, season) -> stats
+            team_history = get_all_historical_player_teams(regular_only=True)
+
+            for (data_pid, season_str), stats in stats_map.items():
+                s = (season_str or "").strip().upper()
+                y = _year_from_season(season_str)
+                if not (s.startswith("ALPB") and "TRAINING" not in s and "PLAYOFF" not in s
+                        and y and y is not None):
+                    continue
+                if allowed_seasons and season_str not in allowed_seasons:
+                    continue
+                if not any(stats.get(k, 0) > 0 for k in ("H", "HR", "RBI", "SB", "R", "BB")):
+                    continue
+
+                season_year = y
+
+                # Resolve postgres player by external_player_id, then by name fallback
+                pg_player = ext_id_to_player.get(str(data_pid))
+                if not pg_player:
+                    name = (stats.get("player_name") or "").strip().lower()
+                    pg_player = name_to_player.get(name)
+
+                # Build player info dict (from postgres if available, else from data.db)
+                player_teams = team_history.get(str(data_pid), set())
+                most_recent_team = None
+                most_recent_code = None
+                if pg_player:
+                    most_recent_team = pg_player.team.team_name if pg_player.team else None
+                    most_recent_code = pg_player.team.team_code if pg_player.team else None
+                else:
+                    # Pick a known current team from player's history if available
+                    for tn in player_teams:
+                        code = _data_db_team_to_code(tn)
+                        if code:
+                            most_recent_code = code
+                            most_recent_team = tn
+                            break
+
+                pinfo = {
+                    "id": str(data_pid),  # data.db player_id as string
+                    "full_name": (pg_player.full_name if pg_player
+                                  else (stats.get("player_name") or str(data_pid))),
+                    "team": most_recent_code,
+                    "team_name": most_recent_team,
+                    "position": pg_player.primary_position if pg_player else "",
+                }
+                pool.append((pinfo, stats, season_str, season_year))
         except Exception:
             pass
 
-    # Fall back to career stats if pool too small
+    # Fall back to career stats from postgres if pool too small
     if len(pool) < 2:
         agg = _higher_lower_agg()
-        pool = [(p, agg.get(p.id, {}), None, None) for p in all_players]
+        pool = [
+            (
+                {
+                    "id": str(p.id),
+                    "full_name": p.full_name,
+                    "team": p.team.team_code if p.team else None,
+                    "team_name": p.team.team_name if p.team else None,
+                    "position": p.primary_position,
+                },
+                agg.get(p.id, {}),
+                None,
+                None,
+            )
+            for p in all_pg_players
+        ]
 
     if len(pool) < 2:
         return None
@@ -684,16 +855,17 @@ def get_higher_lower_pair(allowed_seasons=None) -> dict:
     entry1, entry2 = pool[0], pool[1]
     for _ in range(50):
         entry1, entry2 = random.sample(pool, 2)
-        if entry1[0].id != entry2[0].id:
+        if entry1[0]["id"] != entry2[0]["id"]:
             break
 
-    p1, s1, season1, year1 = entry1
-    p2, s2, season2, year2 = entry2
+    pinfo1, s1, season1, year1 = entry1
+    pinfo2, s2, season2, year2 = entry2
 
-    # Choose a relevant stat based on positions
-    if p1.primary_position == "P" and p2.primary_position == "P":
+    pos1 = pinfo1.get("position") or ""
+    pos2 = pinfo2.get("position") or ""
+    if pos1 == "P" and pos2 == "P":
         stat_key = random.choice(HIGHER_LOWER_STATS["pitchers"])
-    elif p1.primary_position != "P" and p2.primary_position != "P":
+    elif pos1 != "P" and pos2 != "P":
         stat_key = random.choice(HIGHER_LOWER_STATS["batters"])
     else:
         stat_key = random.choice(["H", "R"])
@@ -706,21 +878,21 @@ def get_higher_lower_pair(allowed_seasons=None) -> dict:
         "stat_key": stat_key,
         "stat_label": STAT_DISPLAY.get(stat_key, stat_key),
         "player_a": {
-            "id": p1.id,
-            "full_name": p1.full_name,
-            "team": p1.team.team_code if p1.team else None,
-            "team_name": p1.team.team_name if p1.team else None,
-            "position": p1.primary_position,
+            "id": pinfo1["id"],
+            "full_name": pinfo1["full_name"],
+            "team": pinfo1["team"],
+            "team_name": pinfo1["team_name"],
+            "position": pinfo1["position"],
             "value": val1,
             "season": season1,
             "season_year": year1,
         },
         "player_b": {
-            "id": p2.id,
-            "full_name": p2.full_name,
-            "team": p2.team.team_code if p2.team else None,
-            "team_name": p2.team.team_name if p2.team else None,
-            "position": p2.primary_position,
+            "id": pinfo2["id"],
+            "full_name": pinfo2["full_name"],
+            "team": pinfo2["team"],
+            "team_name": pinfo2["team_name"],
+            "position": pinfo2["position"],
             "season": season2,
             "season_year": year2,
             # value hidden until user answers

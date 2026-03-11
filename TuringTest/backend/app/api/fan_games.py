@@ -95,19 +95,55 @@ def _get_result(user_id, challenge_id):
 
 @fan_games_bp.route("/players/search", methods=["GET"])
 def player_search():
+    """
+    Search for players across ALL historical seasons via data.db.
+    Returns data.db player_ids (strings) so historical players are included.
+    Falls back to postgres-only search if data.db is unavailable.
+    """
     q = request.args.get("q", "").strip()
     if len(q) < 2:
         return jsonify([])
+
+    # Primary: search data.db across all historical seasons (returns one entry per player per season)
+    try:
+        from ..services.data_db import get_batter_season_stats
+        stats_map = get_batter_season_stats()
+        q_lower = q.lower()
+        seen_pid = set()
+        results = []
+        for (pid, season), v in stats_map.items():
+            name = (v.get("player_name") or "").strip()
+            if q_lower not in name.lower():
+                continue
+            if pid in seen_pid:
+                continue
+            seen_pid.add(pid)
+            # Try to enrich with postgres data via external_player_id
+            pg = Player.query.filter_by(external_player_id=pid).first()
+            results.append({
+                "id": pid,  # data.db player_id (string)
+                "full_name": pg.full_name if pg else name,
+                "position": pg.primary_position if pg else "",
+                "team": pg.team.team_code if pg and pg.team else None,
+                "team_name": pg.team.team_name if pg and pg.team else None,
+            })
+            if len(results) >= 20:
+                break
+        if results:
+            return jsonify(results)
+    except Exception:
+        pass
+
+    # Fallback: postgres search (all players, not just active)
     players = (
         Player.query
         .filter(Player.full_name.ilike(f"%{q}%"))
-        .filter_by(active=True)
         .limit(20)
         .all()
     )
     return jsonify([
         {
-            "id": p.id,
+            "id": str(p.external_player_id) if p.external_player_id else str(p.id),
             "full_name": p.full_name,
             "position": p.primary_position,
             "team": p.team.team_code if p.team else None,
@@ -179,16 +215,34 @@ def grid_guess():
     if cell_key in rdata.get("picks", {}) and rdata["picks"][cell_key].get("correct"):
         return jsonify({"error": "Cell already filled"}), 400
 
-    valid = validate_grid_answer(cdata, int(row), int(col), int(player_id))
+    # player_id is now a data.db string id; validate as string
+    player_id_str = str(player_id)
+    valid = validate_grid_answer(cdata, int(row), int(col), player_id_str)
 
-    # Fetch player info for response
-    player = Player.query.get(player_id)
-    player_info = {
-        "id": player.id,
-        "full_name": player.full_name,
-        "position": player.primary_position,
-        "team": player.team.team_code if player.team else None,
-    } if player else {"id": player_id}
+    # Fetch player info: try postgres by external_player_id first, then data.db
+    player = Player.query.filter_by(external_player_id=player_id_str).first()
+    if not player:
+        # legacy: try by postgres integer id
+        try:
+            player = Player.query.get(int(player_id_str))
+        except (ValueError, TypeError):
+            player = None
+
+    if player:
+        player_info = {
+            "id": player_id_str,
+            "full_name": player.full_name,
+            "position": player.primary_position,
+            "team": player.team.team_code if player.team else None,
+        }
+    else:
+        # Look up name from data.db
+        try:
+            from ..services.data_db import get_player_name_by_id
+            pname = get_player_name_by_id(player_id_str)
+        except Exception:
+            pname = None
+        player_info = {"id": player_id_str, "full_name": pname or player_id_str}
 
     picks = rdata.get("picks", {})
     misses = rdata.get("misses", 0)
@@ -253,16 +307,35 @@ def grid_answers():
         return jsonify({"error": "Complete the game first"}), 403
 
     # Build answer display (player names for each cell)
+    # valid_answers now stores data.db player_ids (strings)
     cdata = challenge.challenge_data
     valid_answers = cdata.get("valid_answers", {})
+
+    def _resolve_name(pid_str):
+        """Resolve data.db player_id to display name."""
+        pid_str = str(pid_str)
+        # Try postgres by external_player_id
+        p = Player.query.filter_by(external_player_id=pid_str).first()
+        if p:
+            return p.full_name
+        # Try postgres by integer id (legacy)
+        try:
+            p = Player.query.get(int(pid_str))
+            if p:
+                return p.full_name
+        except (ValueError, TypeError):
+            pass
+        # Fall back to data.db
+        try:
+            from ..services.data_db import get_player_name_by_id
+            return get_player_name_by_id(pid_str) or pid_str
+        except Exception:
+            return pid_str
+
     answer_display = {}
     for cell_key, player_ids in valid_answers.items():
-        names = []
-        for pid in player_ids[:5]:  # show up to 5 examples
-            p = Player.query.get(pid)
-            if p:
-                names.append(p.full_name)
-        answer_display[cell_key] = names
+        names = [_resolve_name(pid) for pid in player_ids[:5]]
+        answer_display[cell_key] = [n for n in names if n]
 
     payload = {
         "rows": cdata.get("rows", []),
